@@ -1,0 +1,102 @@
+name: build keygen
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Make a new release'
+        type: boolean
+        default: false
+      tag:
+        description: 'Release tag'
+        required: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [arm64-v8a, armeabi-v7a]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r28c
+          add-to-path: false
+
+      - name: Build openssl
+        run: |
+          # Download openssl latest stable release
+          TAGNAME=$(gh release list -R openssl/openssl --json tagName,isLatest -q '.[] | select(.isLatest) | .tagName')
+          gh release download -R openssl/openssl $TAGNAME -p "*.tar.gz" -O openssl.tar.gz
+          mkdir openssl && tar -xvf openssl.tar.gz -C openssl --strip-components=1 && rm -rf openssl.tar.gz
+
+          mkdir -p out
+          cd openssl
+
+          export ANDROID_NDK_ROOT="$NDK_HOME"
+          PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$NDK_HOME/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/bin:$PATH
+
+          if [ "${{ matrix.arch }}" == "arm64-v8a" ]; then
+            abi="android-arm64"
+          else
+            abi="android-arm"
+          fi
+
+          ./Configure $abi -D__ANDROID_API__=29 -DOPENSSL_NO_CONF --prefix="${{ github.workspace }}/out" \
+              no-shared no-module no-autoload-config no-asm no-ui-console \
+              no-dh no-dsa no-ec2m no-sm2 no-sm3 no-sm4 \
+              no-ssl no-tls no-dtls no-engine no-ocsp no-cms no-ts no-psk no-srp no-async no-comp no-nextprotoneg \
+              no-aria no-bf no-camellia no-cast no-des no-idea no-rc2 no-rc4 no-rc5 no-seed no-chacha no-poly1305
+          make -j$(nproc)
+          make install
+        env: 
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+      - name: Build keygen
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.arch }} \
+            -DANDROID_NATIVE_API_LEVEL="29"
+          cmake --build .
+          chmod +x keygen
+
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Compress with UPX
+        run: |
+          upx --best --lzma build/keygen -o keygen
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: keygen
+
+  release:
+    needs: build
+    if: github.event.inputs.create_release && github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Create tar archive
+        run: tar -czvf keygen.tar.gz -C artifacts .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: keygen.tar.gz
+          tag_name: ${{ github.event.inputs.tag }}
