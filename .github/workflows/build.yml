@@ -23,51 +23,62 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r28c
-          add-to-path: false
-
-      - name: Build openssl
+      - name: Setup Zig CC
+        id: zigcc
         run: |
-          # Download openssl latest stable release
+          curl -L https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o zig.tar.xz
+          mkdir zig && tar -xf zig.tar.xz -C zig --strip-components=1 && rm -f zig.tar.xz
+          echo "zigcc-path=${{ github.workspace }}/zig" >> $GITHUB_OUTPUT
+
+      - name: Download openssl latest release
+        run: |
           TAGNAME=$(gh release list -R openssl/openssl --json tagName,isLatest -q '.[] | select(.isLatest) | .tagName')
           gh release download -R openssl/openssl $TAGNAME -p "*.tar.gz" -O openssl.tar.gz
           mkdir openssl && tar -xvf openssl.tar.gz -C openssl --strip-components=1 && rm -rf openssl.tar.gz
 
+      - name: Build openssl
+        run: |
+          export PATH=$ZIGCC_PATH:$PATH
           mkdir -p out
           cd openssl
 
-          export ANDROID_NDK_ROOT="$NDK_HOME"
-          PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$NDK_HOME/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/bin:$PATH
-
           if [ "${{ matrix.arch }}" == "arm64-v8a" ]; then
-            abi="android-arm64"
+            TARGET="aarch64-linux"
           else
-            abi="android-arm"
+            TARGET="arm-linux"
           fi
 
-          ./Configure $abi -D__ANDROID_API__=29 -DOPENSSL_NO_CONF --prefix="${{ github.workspace }}/out" \
+          CC="zig cc -target $TARGET" ./config --prefix="${{ github.workspace }}/out" \
               no-shared no-module no-autoload-config no-asm no-ui-console \
               no-dh no-dsa no-ec2m no-sm2 no-sm3 no-sm4 \
               no-ssl no-tls no-dtls no-engine no-ocsp no-cms no-ts no-psk no-srp no-async no-comp no-nextprotoneg \
               no-aria no-bf no-camellia no-cast no-des no-idea no-rc2 no-rc4 no-rc5 no-seed no-chacha no-poly1305
           make -j$(nproc)
           make install
-        env: 
-          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+
+          cd ..
+          mv out/lib* out/lib
+        env:
+          ZIGCC_PATH: ${{ steps.zigcc.outputs.zigcc-path }}
 
       - name: Build keygen
         run: |
           mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=${{ matrix.arch }} \
-            -DANDROID_NATIVE_API_LEVEL="29"
+          export PATH=$ZIGCC_PATH:$PATH
+
+          if [ "${{ matrix.arch }}" == "arm64-v8a" ]; then
+            TARGET="aarch64-linux"
+          else
+            TARGET="arm-linux"
+          fi
+
+          export CC="zig cc -target $TARGET"
+          export CXX="zig c++ -target $TARGET"
+
+          cmake ..
           cmake --build .
-          chmod +x keygen
+        env:
+          ZIGCC_PATH: ${{ steps.zigcc.outputs.zigcc-path }}
 
       - name: Install UPX
         run: sudo apt-get update && sudo apt-get install -y upx
