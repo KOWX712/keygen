@@ -26,7 +26,7 @@ jobs:
       - name: Setup Zig CC
         id: zigcc
         run: |
-          curl -L https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o zig.tar.xz
+          curl -L https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
           mkdir zig && tar -xf zig.tar.xz -C zig --strip-components=1 && rm -f zig.tar.xz
           echo "zigcc-path=${{ github.workspace }}/zig" >> $GITHUB_OUTPUT
 
@@ -106,8 +106,14 @@ jobs:
       - name: Create tar archive
         run: tar -czvf keygen.tar.gz -C artifacts .
 
+      - name: Get openssl tag
+        id: openssl
+        run: |
+          OPENSSL_TAG=$(gh release list -R openssl/openssl --json tagName,isLatest -q '.[] | select(.isLatest) | .tagName')
+          echo "OPENSSL_TAG=$OPENSSL_TAG" >> $GITHUB_ENV
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: keygen.tar.gz
-          tag_name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ github.event.inputs.tag }}_${{ env.OPENSSL_TAG }}
